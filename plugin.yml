@@ -1,0 +1,17 @@
+name: RankPro
+version: 1.0.0
+main: RankPro\Main
+api: 5.0.0
+author: Firekid846
+description: 9-tier rank system with colored names
+
+commands:
+  rank:
+    description: Rank management
+    usage: "/rank <set|remove|list|check>"
+    permission: rankpro.admin
+
+permissions:
+  rankpro.admin:
+    description: Allows managing ranks
+    default: op
