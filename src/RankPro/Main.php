@@ -193,7 +193,13 @@ class Main extends PluginBase implements Listener {
             $rankName = $this->ranks->get($playerName);
             $color = self::RANKS[$rankName];
             
-            $event->setFormat($color . "[" . $rankName . "] " . $color . $playerName . TF::WHITE . ": " . $event->getMessage());
+            $format = $color . "[" . $rankName . "] " . $color . $playerName . TF::WHITE . ": %s";
+            $event->setMessage(sprintf($format, $event->getMessage()));
+            
+            foreach ($this->getServer()->getOnlinePlayers() as $recipient) {
+                $recipient->sendMessage($color . "[" . $rankName . "] " . $color . $playerName . TF::WHITE . ": " . $event->getMessage());
+            }
+            $event->cancel();
         }
     }
 
