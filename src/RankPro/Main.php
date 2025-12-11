@@ -13,206 +13,403 @@ use pocketmine\utils\Config;
 use pocketmine\event\Listener;
 use pocketmine\event\player\PlayerChatEvent;
 use pocketmine\event\player\PlayerJoinEvent;
+use pocketmine\event\block\BlockBreakEvent;
+use pocketmine\scheduler\Task;
+use pocketmine\block\VanillaBlocks;
 
 class Main extends PluginBase implements Listener {
 
-    private Config $ranks;
+    private Config $players;
+    private array $playtime = [];
     
     private const RANKS = [
-        "Bronze" => "§6",        // Brown/Dark Orange
-        "Silver" => "§7",        // Gray
-        "Gold" => "§e",          // Yellow
-        "Platinum" => "§b",      // Blue/Aqua
-        "Diamond" => "§5",       // Purple
-        "Master" => "§6",        // Gold (same as bronze but different level)
-        "Grandmaster" => "§6§l", // Bold Gold
-        "Legendary" => "§c",     // Red
-        "Mythic" => "§c§l"       // Bold Red (Mythical)
+        "Bronze" => ["color" => "§6", "xp" => 0],
+        "Silver" => ["color" => "§7", "xp" => 25],
+        "Gold" => ["color" => "§e", "xp" => 75],
+        "Platinum" => ["color" => "§b", "xp" => 225],
+        "Diamond" => ["color" => "§5", "xp" => 525],
+        "Master" => ["color" => "§6", "xp" => 1425],
+        "Grandmaster" => ["color" => "§6§l", "xp" => 3425],
+        "Legendary" => ["color" => "§c", "xp" => 7425],
+        "Mythic" => ["color" => "§c§l", "xp" => 17425]
     ];
+
+    private const XP_PLAYTIME = 20;
+    private const XP_PVP_WIN = 10;
+    private const XP_PVP_STREAK_5 = 100;
+    private const XP_IRON = 5;
+    private const XP_DIAMOND = 15;
+    private const XP_EMERALD = 20;
 
     protected function onEnable(): void {
         $this->getServer()->getPluginManager()->registerEvents($this, $this);
         
         @mkdir($this->getDataFolder());
-        $this->ranks = new Config($this->getDataFolder() . "ranks.yml", Config::YAML);
+        $this->players = new Config($this->getDataFolder() . "players.yml", Config::YAML);
+        
+        $this->getScheduler()->scheduleRepeatingTask(new PlaytimeTask($this), 20 * 60);
         
         $this->getLogger()->info(TF::GREEN . "RankPro by Firekid846 enabled!");
-        $this->getLogger()->info(TF::YELLOW . "Available ranks: Bronze, Silver, Gold, Platinum, Diamond, Master, Grandmaster, Legendary, Mythic");
+        $this->getLogger()->info(TF::YELLOW . "XP System: Playtime, Mining, PvP");
     }
 
     public function onCommand(CommandSender $sender, Command $command, string $label, array $args): bool {
         
-        if ($command->getName() !== "rank") {
-            return false;
+        switch ($command->getName()) {
+            case "xpbal":
+            case "xp":
+                return $this->checkXP($sender, $args);
+            
+            case "rankadmin":
+                if (!$sender->hasPermission("rankpro.admin")) {
+                    $sender->sendMessage(TF::RED . "You don't have permission!");
+                    return true;
+                }
+                return $this->adminCommands($sender, $args);
         }
 
-        if (!$sender->hasPermission("rankpro.admin")) {
-            $sender->sendMessage(TF::RED . "You don't have permission!");
+        return false;
+    }
+
+    private function checkXP(CommandSender $sender, array $args): bool {
+        if (!$sender instanceof Player && count($args) < 1) {
+            $sender->sendMessage(TF::YELLOW . "Usage: /xpbal [player]");
             return true;
         }
 
+        $targetName = count($args) > 0 ? $args[0] : ($sender instanceof Player ? $sender->getName() : "");
+
+        if (!$this->players->exists($targetName)) {
+            $this->initPlayer($targetName);
+        }
+
+        $data = $this->players->get($targetName);
+        $xp = (int)$data["xp"];
+        $rank = $this->getRankByXP($xp);
+        $nextRank = $this->getNextRank($rank);
+        
+        $color = self::RANKS[$rank]["color"];
+
+        $sender->sendMessage(TF::GOLD . "━━━━━━━ XP & Rank ━━━━━━━");
+        $sender->sendMessage(TF::YELLOW . "Player: " . TF::WHITE . $targetName);
+        $sender->sendMessage(TF::YELLOW . "Current Rank: " . $color . $rank);
+        $sender->sendMessage(TF::YELLOW . "Total XP: " . TF::AQUA . number_format($xp));
+        
+        if ($nextRank !== null) {
+            $needed = self::RANKS[$nextRank]["xp"] - $xp;
+            $nextColor = self::RANKS[$nextRank]["color"];
+            $sender->sendMessage(TF::YELLOW . "Next Rank: " . $nextColor . $nextRank);
+            $sender->sendMessage(TF::YELLOW . "XP Needed: " . TF::RED . number_format($needed));
+        } else {
+            $sender->sendMessage(TF::GREEN . "✓ MAX RANK!");
+        }
+        
+        $sender->sendMessage(TF::GOLD . "━━━━━━━━━━━━━━━━━━━━━━━━");
+
+        return true;
+    }
+
+    private function adminCommands(CommandSender $sender, array $args): bool {
         if (count($args) < 1) {
-            $this->sendHelp($sender);
+            $sender->sendMessage(TF::GOLD . "━━━━━━━ Rank Admin ━━━━━━━");
+            $sender->sendMessage(TF::YELLOW . "/rankadmin give <p> <xp>" . TF::GRAY . " - Give XP");
+            $sender->sendMessage(TF::YELLOW . "/rankadmin take <p> <xp>" . TF::GRAY . " - Take XP");
+            $sender->sendMessage(TF::YELLOW . "/rankadmin set <p> <xp>" . TF::GRAY . " - Set XP");
+            $sender->sendMessage(TF::YELLOW . "/rankadmin setrank <p> <rank>" . TF::GRAY . " - Force rank");
+            $sender->sendMessage(TF::YELLOW . "/rankadmin reset <p>" . TF::GRAY . " - Reset to 0 XP");
+            $sender->sendMessage(TF::YELLOW . "/rankadmin list" . TF::GRAY . " - Show ranks");
+            $sender->sendMessage(TF::GOLD . "━━━━━━━━━━━━━━━━━━━━━━━━");
             return true;
         }
 
         $action = strtolower($args[0]);
 
         switch ($action) {
+            case "give":
+                if (count($args) < 3) {
+                    $sender->sendMessage(TF::YELLOW . "Usage: /rankadmin give <player> <xp>");
+                    return true;
+                }
+                $this->addXP($args[1], (int)$args[2]);
+                $sender->sendMessage(TF::GREEN . "✓ Gave " . $args[2] . " XP to " . $args[1]);
+                return true;
+
+            case "take":
+                if (count($args) < 3) {
+                    $sender->sendMessage(TF::YELLOW . "Usage: /rankadmin take <player> <xp>");
+                    return true;
+                }
+                $this->removeXP($args[1], (int)$args[2]);
+                $sender->sendMessage(TF::GREEN . "✓ Took " . $args[2] . " XP from " . $args[1]);
+                return true;
+
             case "set":
-                return $this->setRank($sender, $args);
-            case "remove":
-                return $this->removeRank($sender, $args);
+                if (count($args) < 3) {
+                    $sender->sendMessage(TF::YELLOW . "Usage: /rankadmin set <player> <xp>");
+                    return true;
+                }
+                $this->setXP($args[1], (int)$args[2]);
+                $sender->sendMessage(TF::GREEN . "✓ Set " . $args[1] . "'s XP to " . $args[2]);
+                return true;
+
+            case "setrank":
+                if (count($args) < 3) {
+                    $sender->sendMessage(TF::YELLOW . "Usage: /rankadmin setrank <player> <rank>");
+                    return true;
+                }
+                $rankName = ucfirst(strtolower($args[2]));
+                if (!isset(self::RANKS[$rankName])) {
+                    $sender->sendMessage(TF::RED . "Invalid rank!");
+                    return true;
+                }
+                $this->setXP($args[1], self::RANKS[$rankName]["xp"]);
+                $sender->sendMessage(TF::GREEN . "✓ Set " . $args[1] . " to rank " . self::RANKS[$rankName]["color"] . $rankName);
+                return true;
+
+            case "reset":
+                if (count($args) < 2) {
+                    $sender->sendMessage(TF::YELLOW . "Usage: /rankadmin reset <player>");
+                    return true;
+                }
+                $this->setXP($args[1], 0);
+                $sender->sendMessage(TF::GREEN . "✓ Reset " . $args[1] . " to Bronze (0 XP)");
+                return true;
+
             case "list":
-                return $this->listRanks($sender);
-            case "check":
-                return $this->checkRank($sender, $args);
-            default:
-                $this->sendHelp($sender);
+                $sender->sendMessage(TF::GOLD . "━━━━━━━ Ranks & XP ━━━━━━━");
+                foreach (self::RANKS as $name => $data) {
+                    $sender->sendMessage($data["color"] . $name . TF::GRAY . " - " . number_format($data["xp"]) . " XP");
+                }
+                $sender->sendMessage(TF::GOLD . "━━━━━━━━━━━━━━━━━━━━━━━━");
                 return true;
         }
+
+        return true;
     }
 
-    private function setRank(CommandSender $sender, array $args): bool {
-        if (count($args) < 3) {
-            $sender->sendMessage(TF::YELLOW . "Usage: /rank set <player> <rank>");
-            $sender->sendMessage(TF::GRAY . "Available ranks: Bronze, Silver, Gold, Platinum, Diamond, Master, Grandmaster, Legendary, Mythic");
-            return true;
+    public function addXP(string $player, int $amount, bool $silent = false): void {
+        if (!$this->players->exists($player)) {
+            $this->initPlayer($player);
         }
 
-        $playerName = $args[1];
-        $rankName = ucfirst(strtolower($args[2]));
+        $data = $this->players->get($player);
+        $oldXP = (int)$data["xp"];
+        $newXP = $oldXP + $amount;
+        
+        $data["xp"] = $newXP;
+        $this->players->set($player, $data);
+        $this->players->save();
 
-        if (!isset(self::RANKS[$rankName])) {
-            $sender->sendMessage(TF::RED . "Invalid rank! Available ranks:");
-            foreach (array_keys(self::RANKS) as $rank) {
-                $sender->sendMessage(TF::YELLOW . "  • " . $rank);
+        $oldRank = $this->getRankByXP($oldXP);
+        $newRank = $this->getRankByXP($newXP);
+
+        if ($oldRank !== $newRank) {
+            $this->rankUp($player, $newRank);
+        }
+
+        $this->updatePlayerDisplay($player);
+    }
+
+    public function removeXP(string $player, int $amount): void {
+        if (!$this->players->exists($player)) {
+            $this->initPlayer($player);
+        }
+
+        $data = $this->players->get($player);
+        $oldXP = (int)$data["xp"];
+        $newXP = max(0, $oldXP - $amount);
+        
+        $data["xp"] = $newXP;
+        $this->players->set($player, $data);
+        $this->players->save();
+
+        $this->updatePlayerDisplay($player);
+    }
+
+    public function setXP(string $player, int $xp): void {
+        if (!$this->players->exists($player)) {
+            $this->initPlayer($player);
+        }
+
+        $data = $this->players->get($player);
+        $data["xp"] = $xp;
+        $this->players->set($player, $data);
+        $this->players->save();
+
+        $this->updatePlayerDisplay($player);
+    }
+
+    private function rankUp(string $playerName, string $newRank): void {
+        $player = $this->getServer()->getPlayerExact($playerName);
+        if ($player !== null) {
+            $color = self::RANKS[$newRank]["color"];
+            
+            $player->sendMessage(TF::GOLD . "━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+            $player->sendMessage(TF::GREEN . "✓ RANK UP!");
+            $player->sendMessage(TF::YELLOW . "New Rank: " . $color . $newRank);
+            $player->sendMessage(TF::GOLD . "━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+            
+            foreach ($this->getServer()->getOnlinePlayers() as $p) {
+                if ($p->getName() !== $playerName) {
+                    $p->sendMessage($color . $playerName . TF::YELLOW . " ranked up to " . $color . $newRank . TF::YELLOW . "!");
+                }
             }
-            return true;
         }
-
-        $this->ranks->set($playerName, $rankName);
-        $this->ranks->save();
-
-        $color = self::RANKS[$rankName];
-        $sender->sendMessage(TF::GREEN . "✓ Set " . $playerName . "'s rank to " . $color . $rankName);
-
-        $target = $this->getServer()->getPlayerExact($playerName);
-        if ($target !== null) {
-            $target->setDisplayName($color . $target->getName() . TF::RESET);
-            $target->sendMessage(TF::GREEN . "✓ Your rank has been set to " . $color . $rankName);
-        }
-
-        return true;
     }
 
-    private function removeRank(CommandSender $sender, array $args): bool {
-        if (count($args) < 2) {
-            $sender->sendMessage(TF::YELLOW . "Usage: /rank remove <player>");
-            return true;
-        }
-
-        $playerName = $args[1];
-
-        if (!$this->ranks->exists($playerName)) {
-            $sender->sendMessage(TF::RED . "That player doesn't have a rank!");
-            return true;
-        }
-
-        $this->ranks->remove($playerName);
-        $this->ranks->save();
-
-        $sender->sendMessage(TF::GREEN . "✓ Removed " . $playerName . "'s rank!");
-
-        $target = $this->getServer()->getPlayerExact($playerName);
-        if ($target !== null) {
-            $target->setDisplayName($target->getName());
-            $target->sendMessage(TF::YELLOW . "Your rank has been removed.");
-        }
-
-        return true;
-    }
-
-    private function listRanks(CommandSender $sender): bool {
-        $sender->sendMessage(TF::GOLD . "━━━━━━━ Available Ranks ━━━━━━━");
+    private function getRankByXP(int $xp): string {
+        $currentRank = "Bronze";
         
-        foreach (self::RANKS as $rankName => $color) {
-            $sender->sendMessage($color . "• " . $rankName . TF::RESET . TF::GRAY . " (" . $color . "Color Preview" . TF::GRAY . ")");
-        }
-        
-        $sender->sendMessage(TF::GOLD . "━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-        $sender->sendMessage(TF::GRAY . "Use /rank set <player> <rank> to set ranks");
-
-        return true;
-    }
-
-    private function checkRank(CommandSender $sender, array $args): bool {
-        if (count($args) < 2) {
-            if ($sender instanceof Player) {
-                $playerName = $sender->getName();
+        foreach (self::RANKS as $rank => $data) {
+            if ($xp >= $data["xp"]) {
+                $currentRank = $rank;
             } else {
-                $sender->sendMessage(TF::YELLOW . "Usage: /rank check <player>");
-                return true;
+                break;
             }
-        } else {
-            $playerName = $args[1];
         }
+        
+        return $currentRank;
+    }
 
-        if (!$this->ranks->exists($playerName)) {
-            $sender->sendMessage(TF::YELLOW . $playerName . " doesn't have a rank.");
-            return true;
+    private function getNextRank(string $currentRank): ?string {
+        $found = false;
+        foreach (array_keys(self::RANKS) as $rank) {
+            if ($found) {
+                return $rank;
+            }
+            if ($rank === $currentRank) {
+                $found = true;
+            }
         }
+        return null;
+    }
 
-        $rankName = $this->ranks->get($playerName);
-        $color = self::RANKS[$rankName];
+    private function initPlayer(string $player): void {
+        $this->players->set($player, [
+            "xp" => 0,
+            "pvp_streak" => 0
+        ]);
+        $this->players->save();
+    }
 
-        $sender->sendMessage(TF::GOLD . "━━━━━━━━━━━━━━━━━━━━━━");
-        $sender->sendMessage(TF::YELLOW . "Player: " . TF::WHITE . $playerName);
-        $sender->sendMessage(TF::YELLOW . "Rank: " . $color . $rankName);
-        $sender->sendMessage(TF::GOLD . "━━━━━━━━━━━━━━━━━━━━━━");
-
-        return true;
+    private function updatePlayerDisplay(string $playerName): void {
+        $player = $this->getServer()->getPlayerExact($playerName);
+        if ($player !== null) {
+            $data = $this->players->get($playerName);
+            $xp = (int)$data["xp"];
+            $rank = $this->getRankByXP($xp);
+            $color = self::RANKS[$rank]["color"];
+            
+            $player->setDisplayName($color . $playerName . TF::RESET);
+        }
     }
 
     public function onPlayerJoin(PlayerJoinEvent $event): void {
         $player = $event->getPlayer();
         $playerName = $player->getName();
 
-        if ($this->ranks->exists($playerName)) {
-            $rankName = $this->ranks->get($playerName);
-            $color = self::RANKS[$rankName];
-            $player->setDisplayName($color . $playerName . TF::RESET);
+        if (!$this->players->exists($playerName)) {
+            $this->initPlayer($playerName);
         }
+
+        $this->playtime[$playerName] = time();
+        $this->updatePlayerDisplay($playerName);
     }
 
     public function onPlayerChat(PlayerChatEvent $event): void {
         $player = $event->getPlayer();
         $playerName = $player->getName();
 
-        if ($this->ranks->exists($playerName)) {
-            $rankName = $this->ranks->get($playerName);
-            $color = self::RANKS[$rankName];
-            
-            $format = $color . "[" . $rankName . "] " . $color . $playerName . TF::WHITE . ": %s";
-            $event->setMessage(sprintf($format, $event->getMessage()));
-            
-            foreach ($this->getServer()->getOnlinePlayers() as $recipient) {
-                $recipient->sendMessage($color . "[" . $rankName . "] " . $color . $playerName . TF::WHITE . ": " . $event->getMessage());
-            }
-            $event->cancel();
+        if (!$this->players->exists($playerName)) {
+            return;
+        }
+
+        $data = $this->players->get($playerName);
+        $xp = (int)$data["xp"];
+        $rank = $this->getRankByXP($xp);
+        $color = self::RANKS[$rank]["color"];
+        
+        foreach ($this->getServer()->getOnlinePlayers() as $recipient) {
+            $recipient->sendMessage($color . "[" . $rank . "] " . $color . $playerName . TF::WHITE . ": " . $event->getMessage());
+        }
+        $event->cancel();
+    }
+
+    public function onBlockBreak(BlockBreakEvent $event): void {
+        $player = $event->getPlayer();
+        $block = $event->getBlock();
+
+        $xp = 0;
+
+        if ($block->isSameType(VanillaBlocks::IRON_ORE()) || $block->isSameType(VanillaBlocks::DEEPSLATE_IRON_ORE())) {
+            $xp = self::XP_IRON;
+        } elseif ($block->isSameType(VanillaBlocks::DIAMOND_ORE()) || $block->isSameType(VanillaBlocks::DEEPSLATE_DIAMOND_ORE())) {
+            $xp = self::XP_DIAMOND;
+        } elseif ($block->isSameType(VanillaBlocks::EMERALD_ORE()) || $block->isSameType(VanillaBlocks::DEEPSLATE_EMERALD_ORE())) {
+            $xp = self::XP_EMERALD;
+        }
+
+        if ($xp > 0) {
+            $this->addXP($player->getName(), $xp, true);
         }
     }
 
-    private function sendHelp(CommandSender $sender): void {
-        $sender->sendMessage(TF::GOLD . "━━━━━━━ Rank Commands ━━━━━━━");
-        $sender->sendMessage(TF::YELLOW . "/rank set <p> <rank>" . TF::GRAY . " - Set player rank");
-        $sender->sendMessage(TF::YELLOW . "/rank remove <p>" . TF::GRAY . " - Remove rank");
-        $sender->sendMessage(TF::YELLOW . "/rank list" . TF::GRAY . " - Show all ranks");
-        $sender->sendMessage(TF::YELLOW . "/rank check [p]" . TF::GRAY . " - Check rank");
-        $sender->sendMessage(TF::GOLD . "━━━━━━━━━━━━━━━━━━━━━━━━━");
+    public function givePlaytimeXP(): void {
+        foreach ($this->getServer()->getOnlinePlayers() as $player) {
+            $playerName = $player->getName();
+            
+            if (isset($this->playtime[$playerName])) {
+                $this->addXP($playerName, self::XP_PLAYTIME, true);
+            }
+        }
+    }
+
+    public function addPvPWin(string $player): void {
+        if (!$this->players->exists($player)) {
+            $this->initPlayer($player);
+        }
+
+        $data = $this->players->get($player);
+        $data["pvp_streak"] = isset($data["pvp_streak"]) ? (int)$data["pvp_streak"] + 1 : 1;
+        
+        $this->players->set($player, $data);
+        $this->players->save();
+
+        if ($data["pvp_streak"] === 5) {
+            $this->addXP($player, self::XP_PVP_STREAK_5, false);
+            $p = $this->getServer()->getPlayerExact($player);
+            if ($p !== null) {
+                $p->sendMessage(TF::GREEN . "✓ 5 Win Streak! +" . self::XP_PVP_STREAK_5 . " XP Bonus!");
+            }
+        } else {
+            $this->addXP($player, self::XP_PVP_WIN, false);
+        }
+    }
+
+    public function resetPvPStreak(string $player): void {
+        if (!$this->players->exists($player)) {
+            return;
+        }
+
+        $data = $this->players->get($player);
+        $data["pvp_streak"] = 0;
+        $this->players->set($player, $data);
+        $this->players->save();
     }
 
     protected function onDisable(): void {
-        $this->ranks->save();
+        $this->players->save();
+    }
+}
+
+class PlaytimeTask extends Task {
+    private Main $plugin;
+
+    public function __construct(Main $plugin) {
+        $this->plugin = $plugin;
+    }
+
+    public function onRun(): void {
+        $this->plugin->givePlaytimeXP();
     }
 }
