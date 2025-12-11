@@ -1,17 +1,25 @@
 name: RankPro
-version: 1.0.0
+version: 2.0.0
 main: RankPro\Main
 api: 5.0.0
 author: Firekid846
-description: 9-tier rank system with colored names
+description: XP-based rank progression system
 
 commands:
-  rank:
-    description: Rank management
-    usage: "/rank <set|remove|list|check>"
+  xpbal:
+    description: Check your XP and rank
+    usage: "/xpbal [player]"
+    aliases: ["xp", "rank"]
+    permission: rankpro.use
+  rankadmin:
+    description: Admin rank commands
+    usage: "/rankadmin <give|take|set|setrank|reset|list>"
     permission: rankpro.admin
 
 permissions:
+  rankpro.use:
+    description: Check XP and ranks
+    default: true
   rankpro.admin:
-    description: Allows managing ranks
+    description: Manage XP and ranks
     default: op
